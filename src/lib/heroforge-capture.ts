@@ -15,7 +15,8 @@ export async function captureHeroForgeFrames(
   characterId: string,
   onProgress: (framesDone: number) => void
 ): Promise<{ frameCount: number }> {
-  const outputDir = path.join(process.cwd(), 'data', 'characters', characterId)
+  const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
+  const outputDir = path.join(dataDir, 'characters', characterId)
   await fs.mkdir(outputDir, { recursive: true })
 
   // Decode URL in case it contains %3D instead of = (copied from browser address bar)

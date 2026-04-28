@@ -4,7 +4,9 @@ import * as schema from './schema'
 import path from 'path'
 import fs from 'fs'
 
-const DB_PATH = path.join(process.cwd(), 'data', 'guild.db')
+// DATA_DIR can be overridden via env var — set it to the Railway volume mount path
+const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
+const DB_PATH = path.join(DATA_DIR, 'guild.db')
 type DrizzleDB = ReturnType<typeof drizzle<typeof schema>>
 
 const globalForDb = global as unknown as { _db?: DrizzleDB }

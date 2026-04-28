@@ -1,9 +1,8 @@
 FROM node:22-bookworm-slim
 
-# Install Chromium and its OS dependencies directly (much smaller than the full Playwright image)
+# Install OS dependencies that Playwright's Chromium needs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
-    chromium-sandbox \
+    ca-certificates \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -24,17 +23,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxfixes3 \
     libxrandr2 \
     libxshmfence1 \
+    libxss1 \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Tell Playwright not to download its own browser — use the system Chromium above
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
-
 COPY package*.json ./
 RUN npm ci
+
+# Install Playwright's own Chromium — this includes SwiftShader (needed for
+# headless WebGL). System chromium from apt does NOT ship SwiftShader.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install chromium
 
 COPY . .
 RUN npm run build
@@ -42,7 +43,5 @@ RUN npm run build
 RUN mkdir -p /app/data/characters
 
 ENV NODE_ENV=production
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
-
 EXPOSE 3000
 CMD ["npm", "start"]
