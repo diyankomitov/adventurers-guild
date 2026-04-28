@@ -10,10 +10,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-# Let Playwright install exactly the OS packages its Chromium build needs,
-# then download that Chromium (includes SwiftShader for headless WebGL).
+# Install OS deps and both Playwright and rebrowser-playwright Chromium builds.
+# rebrowser-playwright patches CDP at the Node.js level to bypass bot detection.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx playwright install-deps chromium && npx playwright install chromium
+RUN npx playwright install-deps chromium \
+    && npx playwright install chromium \
+    && npx rebrowser-playwright install chromium
 
 COPY . .
 RUN npm run build

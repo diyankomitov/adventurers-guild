@@ -1,9 +1,14 @@
-import { chromium } from 'playwright-extra'
+// Use rebrowser-playwright (patches CDP Runtime.Enable — top Cloudflare detection signal)
+// combined with playwright-extra stealth (patches JS-accessible browser properties)
+import { chromium as rebrowserChromium } from 'rebrowser-playwright'
+import { addExtra } from 'playwright-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import path from 'path'
 import fs from 'fs/promises'
 import { zeroPad } from './utils'
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const chromium = addExtra(rebrowserChromium as any)
 chromium.use(StealthPlugin())
 
 const FRAME_COUNT = 36
@@ -45,11 +50,15 @@ async function runCapture(
   outputDir: string,
   onProgress: ProgressCallback
 ): Promise<void> {
+  // PLAYWRIGHT_PROXY=http://user:pass@host:port bypasses Cloudflare via residential IP
+  const proxyServer = process.env.PLAYWRIGHT_PROXY
+
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.CHROMIUM_EXECUTABLE_PATH
       ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH }
       : {}),
+    ...(proxyServer ? { proxy: { server: proxyServer } } : {}),
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -76,18 +85,16 @@ async function runCapture(
   const page = await context.newPage()
   const livePath = path.join(outputDir, 'debug-live.png')
 
-  // Saves a full-page screenshot to debug-live.png for the processing overlay
   async function saveLive(): Promise<void> {
     try {
       await page.screenshot({ path: livePath })
-    } catch { /* ignore — non-critical */ }
+    } catch { /* non-critical */ }
   }
 
   async function debugSnapshot(label: string): Promise<string> {
     try {
       const screenshotPath = path.join(outputDir, `debug-${label}.png`)
       await page.screenshot({ path: screenshotPath, fullPage: true })
-      // Also update the live preview so the overlay shows the failure state
       await fs.copyFile(screenshotPath, livePath).catch(() => {})
       const title = await page.title().catch(() => '(no title)')
       const url = page.url()
@@ -112,9 +119,9 @@ async function runCapture(
     await saveLive()
     onProgress(0, 'Page loaded — checking for bot challenges...')
 
-    // Give Cloudflare up to 15s to resolve if the challenge page is showing
+    // Give Cloudflare up to 20s to self-resolve (sometimes the challenge passes automatically)
     let elapsed = 0
-    while (elapsed < 15_000) {
+    while (elapsed < 20_000) {
       const isChallenge = await page.evaluate(() => {
         const title = document.title.toLowerCase()
         const body = document.body?.innerText?.toLowerCase() ?? ''
@@ -146,7 +153,10 @@ async function runCapture(
     if (stillChallenge) {
       const debug = await debugSnapshot('cloudflare-challenge')
       throw new Error(
-        `Cloudflare bot detection triggered — headless browser identified as a bot.\n${debug}`
+        `Cloudflare bot detection triggered.\n` +
+        `Railway uses datacenter IPs which Cloudflare flags as bots.\n` +
+        `Fix: set PLAYWRIGHT_PROXY=http://user:pass@host:port in Railway variables ` +
+        `to route the capture through a residential IP.\n${debug}`
       )
     }
 
@@ -157,9 +167,7 @@ async function runCapture(
       .waitForSelector('canvas', { timeout: 60_000 })
       .catch(async () => {
         const debug = await debugSnapshot('no-canvas')
-        throw new Error(
-          `3D viewer canvas never appeared after 60 seconds.\n${debug}`
-        )
+        throw new Error(`3D viewer canvas never appeared after 60 seconds.\n${debug}`)
       })
 
     onProgress(0, 'Canvas found — clicking to activate viewer...')
@@ -170,7 +178,6 @@ async function runCapture(
     await page.mouse.click(cx, cy)
     await page.waitForTimeout(1_000)
 
-    // Wait up to 60s for WebGL to render something, sampling a 3×3 grid
     onProgress(0, 'Waiting for 3D render...')
     const renderDeadline = Date.now() + 60_000
     let rendered = false
@@ -208,7 +215,6 @@ async function runCapture(
       if (!canvas) throw new Error(`Canvas disappeared at frame ${i}`)
       const framePath = path.join(outputDir, `frame-${zeroPad(i)}.png`)
       await canvas.screenshot({ path: framePath, type: 'png' })
-      // Mirror each captured frame to the live preview
       await fs.copyFile(framePath, livePath).catch(() => {})
       onProgress(i + 1, `Capturing pose ${i + 1} of ${FRAME_COUNT}...`)
     }
