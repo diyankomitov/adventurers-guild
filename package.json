@@ -23,6 +23,8 @@
     "nanoid": "^5.0.9",
     "next": "^16.2.4",
     "playwright": "^1.49.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.54.2",

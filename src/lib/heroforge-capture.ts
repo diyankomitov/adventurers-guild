@@ -1,7 +1,10 @@
-import { chromium } from 'playwright'
+import { chromium } from 'playwright-extra'
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import path from 'path'
 import fs from 'fs/promises'
 import { zeroPad } from './utils'
+
+chromium.use(StealthPlugin())
 
 const FRAME_COUNT = 36
 const DEGREES_PER_FRAME = 360 / FRAME_COUNT
@@ -41,10 +44,8 @@ async function runCapture(
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
-  })
-
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
   })
 
   const page = await context.newPage()
@@ -74,12 +75,37 @@ async function runCapture(
         throw new Error(`Navigation failed: ${err.message}\n${debug}`)
       })
 
+    onProgress(0, 'Page loaded — checking for bot challenges...')
+
+    // Detect Cloudflare or other bot challenges and fail fast with a clear message
+    const isChallengePage = await page.evaluate(() => {
+      const title = document.title.toLowerCase()
+      const body = document.body?.innerText?.toLowerCase() ?? ''
+      return (
+        title.includes('just a moment') ||
+        title.includes('checking your browser') ||
+        title.includes('attention required') ||
+        body.includes('checking if the site connection is secure') ||
+        body.includes('verifying you are human') ||
+        body.includes('please wait while we verify') ||
+        !!document.getElementById('challenge-form') ||
+        !!document.querySelector('[data-cf-turnstile]')
+      )
+    }).catch(() => false)
+
+    if (isChallengePage) {
+      const debug = await debugSnapshot('cloudflare-challenge')
+      throw new Error(
+        `Cloudflare bot detection triggered — the headless browser was identified as a bot.\n${debug}`
+      )
+    }
+
     onProgress(0, 'Page loaded — waiting for 3D viewer to initialise...')
 
     // Wait for a canvas element to exist in the DOM
     await page
       .waitForSelector('canvas', { timeout: 120_000 })
-      .catch(async (err: Error) => {
+      .catch(async (_err: Error) => {
         const debug = await debugSnapshot('no-canvas')
         throw new Error(
           `3D viewer canvas never appeared after 2 minutes. ` +
@@ -111,7 +137,7 @@ async function runCapture(
         },
         { timeout: 180_000, polling: 500 }
       )
-      .catch(async (err: Error) => {
+      .catch(async (_err: Error) => {
         const debug = await debugSnapshot('no-webgl-render')
         throw new Error(
           `Canvas appeared but WebGL never rendered any pixels after 3 minutes. ` +
