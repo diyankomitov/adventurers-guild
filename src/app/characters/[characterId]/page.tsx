@@ -2,14 +2,27 @@ export const dynamic = 'force-dynamic'
 
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
+import path from 'path'
+import fs from 'fs/promises'
 import { db } from '@/db'
 import { characters, parties } from '@/db/schema'
 import { eq } from 'drizzle-orm'
 import { PageContainer } from '@/components/layout/page-container'
 import { RotationViewer } from '@/components/rotation-viewer/rotation-viewer'
-import { ProcessingOverlay } from '@/components/registration/processing-overlay'
 import { CharacterStatusClient } from './character-status-client'
-import { ChevronLeft, Scroll, Users, ExternalLink } from 'lucide-react'
+import { ChevronLeft, Scroll, Users, ExternalLink, Download } from 'lucide-react'
+
+const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
+
+async function getDebugScreenshots(characterId: string): Promise<string[]> {
+  const dir = path.join(DATA_DIR, 'characters', characterId)
+  try {
+    const files = await fs.readdir(dir)
+    return files.filter((f) => f.startsWith('debug-') && f.endsWith('.png'))
+  } catch {
+    return []
+  }
+}
 
 interface Props {
   params: Promise<{ characterId: string }>
@@ -37,6 +50,8 @@ export default async function CharacterDetailPage({ params }: Props) {
   const isComplete = character.jobStatus === 'complete' && character.frameCount > 0
   const isPending =
     character.jobStatus === 'pending' || character.jobStatus === 'processing'
+  const isError = character.jobStatus === 'error'
+  const debugScreenshots = isError ? await getDebugScreenshots(characterId) : []
 
   return (
     <PageContainer>
@@ -63,20 +78,53 @@ export default async function CharacterDetailPage({ params }: Props) {
             <CharacterStatusClient characterId={character.id} jobId={character.jobId} />
           ) : (
             /* Error state */
-            <div className="card-dark rounded-2xl p-8 text-center">
-              <div className="text-4xl mb-4">⚠️</div>
-              <h3 className="font-display text-lg text-parchment-200 mb-2">
-                Capture Failed
-              </h3>
-              <p className="font-body text-sm text-parchment-300/60 mb-6 leading-relaxed">
-                {character.jobError ?? 'An error occurred while capturing the miniature.'}
-              </p>
-              <Link
-                href="/characters/new"
-                className="btn-secondary inline-flex items-center gap-2"
-              >
-                Try Again
-              </Link>
+            <div className="space-y-4">
+              <div className="card-dark rounded-2xl p-8 text-center">
+                <div className="text-4xl mb-4">⚠️</div>
+                <h3 className="font-display text-lg text-parchment-200 mb-2">
+                  Capture Failed
+                </h3>
+                <p className="font-body text-sm text-parchment-300/60 mb-6 leading-relaxed whitespace-pre-wrap break-words">
+                  {character.jobError ?? 'An error occurred while capturing the miniature.'}
+                </p>
+                <Link
+                  href="/characters/new"
+                  className="btn-secondary inline-flex items-center gap-2"
+                >
+                  Try Again
+                </Link>
+              </div>
+
+              {debugScreenshots.length > 0 && (
+                <div className="card-dark rounded-2xl p-5 space-y-4">
+                  <p className="font-display text-sm tracking-widest uppercase text-parchment-300/40">
+                    Debug Screenshots
+                  </p>
+                  {debugScreenshots.map((filename) => {
+                    const url = `/api/frames/${characterId}/${filename}`
+                    return (
+                      <div key={filename} className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-ui text-xs text-parchment-300/50">{filename}</span>
+                          <a
+                            href={`${url}?download=1`}
+                            download={filename}
+                            className="inline-flex items-center gap-1.5 font-ui text-xs text-parchment-300/50 hover:text-gold-400 transition-colors"
+                          >
+                            <Download className="w-3 h-3" />
+                            Download
+                          </a>
+                        </div>
+                        <img
+                          src={url}
+                          alt={filename}
+                          className="w-full rounded-lg border border-white/[0.08]"
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
