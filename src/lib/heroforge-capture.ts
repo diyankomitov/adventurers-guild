@@ -18,9 +18,11 @@ export async function captureHeroForgeFrames(
   const outputDir = path.join(process.cwd(), 'data', 'characters', characterId)
   await fs.mkdir(outputDir, { recursive: true })
 
+  // Decode URL in case it contains %3D instead of = (copied from browser address bar)
+  const navigateUrl = decodeURIComponent(heroforgeUrl)
+
   const browser = await chromium.launch({
     headless: true,
-    // In dev/sandbox: use pre-installed Chromium. In production: auto-detected from PLAYWRIGHT_BROWSERS_PATH.
     ...(process.env.CHROMIUM_EXECUTABLE_PATH
       ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH }
       : {}),
@@ -35,42 +37,30 @@ export async function captureHeroForgeFrames(
       '--ignore-gpu-blocklist',
       '--disable-dev-shm-usage',
       '--disable-web-security',
+      // Avoid headless detection
+      '--disable-blink-features=AutomationControlled',
     ],
   })
 
-  const page = await browser.newPage()
+  const context = await browser.newContext({
+    // Spoof a real desktop browser to avoid bot detection
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
+  })
+
+  // Remove the webdriver property that headless Chrome exposes
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+  })
+
+  const page = await context.newPage()
 
   try {
-    await page.setViewportSize({ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT })
+    await page.goto(navigateUrl, { waitUntil: 'networkidle', timeout: 90_000 })
 
-    // Inject Three.js interceptor before navigation
-    await page.addInitScript(() => {
-      ;(window as Window & { __THREE_INTERCEPTED__?: unknown }).__THREE_INTERCEPTED__ =
-        undefined
-      const origDefine = Object.defineProperty.bind(Object)
-      try {
-        origDefine(window, 'THREE', {
-          set(val: unknown) {
-            ;(
-              window as Window & { __THREE_INTERCEPTED__?: unknown }
-            ).__THREE_INTERCEPTED__ = val
-            origDefine(window, 'THREE', {
-              value: val,
-              writable: true,
-              configurable: true,
-            })
-          },
-          configurable: true,
-        })
-      } catch {
-        // ignore if already defined
-      }
-    })
-
-    await page.goto(heroforgeUrl, { waitUntil: 'networkidle', timeout: 60_000 })
-
-    // Wait for canvas
-    await page.waitForSelector('canvas', { timeout: 30_000 })
+    // Wait for canvas — extended timeout since HeroForge can be slow to init
+    await page.waitForSelector('canvas', { timeout: 60_000 })
 
     // Wait until WebGL renders something (center pixel alpha > 0)
     await page.waitForFunction(
@@ -93,22 +83,19 @@ export async function captureHeroForgeFrames(
         )
         return pixels[3] > 0
       },
-      { timeout: 60_000, polling: 500 }
+      { timeout: 90_000, polling: 500 }
     )
 
     // Extra stabilisation time for textures and lighting
-    await page.waitForTimeout(2_500)
+    await page.waitForTimeout(3_000)
 
     const cx = VIEWPORT_WIDTH / 2
     const cy = VIEWPORT_HEIGHT / 2
 
-    // Move mouse to center (no rotation, button is up)
     await page.mouse.move(cx, cy)
 
     for (let i = 0; i < FRAME_COUNT; i++) {
       if (i > 0) {
-        // Incremental drag: reset to cx,cy then drag right by DRAG_PX
-        // Each drag adds ~10° of rotation (OrbitControls accumulates delta)
         await page.mouse.move(cx, cy)
         await page.mouse.down()
         await page.mouse.move(cx + DRAG_PX, cy, { steps: 3 })
@@ -119,7 +106,6 @@ export async function captureHeroForgeFrames(
       const frameName = `frame-${zeroPad(i)}.png`
       const framePath = path.join(outputDir, frameName)
 
-      // Screenshot only the canvas element (avoids HeroForge UI chrome)
       const canvas = await page.$('canvas')
       if (!canvas) throw new Error('Canvas element disappeared during capture')
       await canvas.screenshot({ path: framePath, type: 'png' })
@@ -129,6 +115,7 @@ export async function captureHeroForgeFrames(
 
     return { frameCount: FRAME_COUNT }
   } finally {
+    await context.close()
     await browser.close()
   }
 }
