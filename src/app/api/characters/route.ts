@@ -13,7 +13,7 @@ const createCharacterSchema = z.object({
     .string()
     .url()
     .refine(
-      (url) => /heroforge\.com\/load_config=[\w-]+/i.test(url),
+      (url) => /heroforge\.com\/load_config[=%3D][\w-]+/i.test(url),
       'Must be a HeroForge share URL'
     ),
   partyName: z.string().min(1).max(100),

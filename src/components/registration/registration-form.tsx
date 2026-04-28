@@ -17,7 +17,7 @@ const schema = z.object({
     .string()
     .url('Must be a valid URL')
     .refine(
-      (url) => /heroforge\.com\/load_config=[\w-]+/i.test(url),
+      (url) => /heroforge\.com\/load_config[=%3D][\w-]+/i.test(url),
       'Must be a HeroForge share URL (e.g. heroforge.com/load_config=...)'
     ),
   partyName: z.string().min(1, 'Please select or create a party'),
