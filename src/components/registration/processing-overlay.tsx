@@ -23,8 +23,19 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
   const [errorMsg, setErrorMsg] = useState('')
   const [characterId, setCharacterId] = useState<string | null>(null)
   const [liveTs, setLiveTs] = useState(0)
+  const [displayedSrc, setDisplayedSrc] = useState<string | null>(null)
   const [clickSent, setClickSent] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Preload the next live screenshot off-screen; only swap the displayed src
+  // once the new image is fully loaded — eliminates flicker and layout shifts.
+  useEffect(() => {
+    if (!characterId || !liveTs) return
+    const url = `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
+    const img = new window.Image()
+    img.onload = () => setDisplayedSrc(url)
+    img.src = url
+  }, [characterId, liveTs])
 
   useEffect(() => {
     const poll = async () => {
@@ -86,10 +97,6 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
   }, [status, characterId, jobId])
 
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
-  const liveUrl = characterId
-    ? `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
-    : null
-
   const isWaiting = status === 'waiting_for_user'
 
   return (
@@ -138,18 +145,16 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
               checkbox in the preview below to continue.
             </p>
 
-            {liveUrl && (
+            {displayedSrc && (
               <div className="w-full max-w-sm mb-4 relative">
                 <div
                   className="relative cursor-crosshair rounded-lg overflow-hidden border-2 border-gold-400/60 animate-pulse-slow"
                   onClick={handlePreviewClick}
                 >
                   <img
-                    key={liveTs}
-                    src={liveUrl}
+                    src={displayedSrc}
                     alt="Live browser view"
                     className="w-full block bg-obsidian-700"
-                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3' }}
                   />
                   {/* Click-here overlay */}
                   <div className="absolute inset-0 bg-black/10 flex items-end justify-center pb-3 pointer-events-none">
@@ -189,17 +194,15 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
             </div>
 
             {/* Live browser preview */}
-            {liveUrl && (
+            {displayedSrc && (
               <div className="w-full max-w-sm mb-4">
                 <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
                   Live preview
                 </p>
                 <img
-                  key={liveTs}
-                  src={liveUrl}
+                  src={displayedSrc}
                   alt="Live capture preview"
                   className="w-full rounded-lg border border-white/[0.08] bg-obsidian-700"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                 />
               </div>
             )}
