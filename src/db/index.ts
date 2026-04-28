@@ -5,19 +5,34 @@ import path from 'path'
 import fs from 'fs'
 
 const DB_PATH = path.join(process.cwd(), 'data', 'guild.db')
-
-// Ensure data directory exists
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
-
 type DrizzleDB = ReturnType<typeof drizzle<typeof schema>>
+
 const globalForDb = global as unknown as { _db?: DrizzleDB }
 
 function createDb(): DrizzleDB {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
   const sqlite = new Database(DB_PATH)
+  sqlite.pragma('busy_timeout = 10000') // wait up to 10s if locked
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
   return drizzle(sqlite, { schema })
 }
 
-export const db = globalForDb._db ?? createDb()
-if (process.env.NODE_ENV !== 'production') globalForDb._db = db
+function getDb(): DrizzleDB {
+  if (!globalForDb._db) {
+    globalForDb._db = createDb()
+  }
+  return globalForDb._db
+}
+
+// Lazy proxy: importing this module does NOT open the DB file.
+// The connection is created only when the first query is made.
+export const db = new Proxy({} as DrizzleDB, {
+  get(_target, prop) {
+    const d = getDb()
+    const val = Reflect.get(d, prop)
+    return typeof val === 'function'
+      ? (val as (...args: unknown[]) => unknown).bind(d)
+      : val
+  },
+})
