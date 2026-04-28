@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, MousePointer2 } from 'lucide-react'
 
 interface ProcessingOverlayProps {
   jobId: string
@@ -11,16 +11,19 @@ interface ProcessingOverlayProps {
 }
 
 const TOTAL_FRAMES = 36
+const VIEWPORT_W = 800
+const VIEWPORT_H = 800
 
 export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOverlayProps) {
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState('Queued...')
-  const [status, setStatus] = useState<'pending' | 'processing' | 'complete' | 'error'>(
+  const [status, setStatus] = useState<'pending' | 'processing' | 'waiting_for_user' | 'complete' | 'error'>(
     'pending'
   )
   const [errorMsg, setErrorMsg] = useState('')
   const [characterId, setCharacterId] = useState<string | null>(null)
   const [liveTs, setLiveTs] = useState(0)
+  const [clickSent, setClickSent] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -62,10 +65,32 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
     return () => clearInterval(intervalRef.current!)
   }, [jobId, onComplete, onError])
 
+  const handlePreviewClick = useCallback(async (e: React.MouseEvent<HTMLDivElement>) => {
+    if (status !== 'waiting_for_user' || !characterId) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    // Scale display coordinates to the 800×800 Playwright viewport
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * VIEWPORT_W)
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * VIEWPORT_H)
+
+    setClickSent(true)
+    try {
+      await fetch(`/api/jobs/${jobId}/interact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ x, y }),
+      })
+      setLiveTs(Date.now())
+    } finally {
+      setTimeout(() => setClickSent(false), 2_000)
+    }
+  }, [status, characterId, jobId])
+
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
   const liveUrl = characterId
     ? `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
     : null
+
+  const isWaiting = status === 'waiting_for_user'
 
   return (
     <AnimatePresence>
@@ -76,25 +101,27 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
         transition={{ duration: 0.3 }}
         className="flex flex-col items-center justify-center py-12 px-8 text-center"
       >
-        {/* Rune spinner */}
-        <div className="relative mb-6">
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
-            className="w-16 h-16 rounded-full border-2 border-gold-500/30 border-t-gold-400"
-          />
-          <motion.div
-            animate={{ rotate: -360 }}
-            transition={{ repeat: Infinity, duration: 4.5, ease: 'linear' }}
-            className="absolute inset-2 rounded-full border border-dashed border-gold-500/20"
-          />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-xl">⚔</span>
+        {/* Rune spinner — hide when waiting for user so attention goes to the preview */}
+        {!isWaiting && (
+          <div className="relative mb-6">
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
+              className="w-16 h-16 rounded-full border-2 border-gold-500/30 border-t-gold-400"
+            />
+            <motion.div
+              animate={{ rotate: -360 }}
+              transition={{ repeat: Infinity, duration: 4.5, ease: 'linear' }}
+              className="absolute inset-2 rounded-full border border-dashed border-gold-500/20"
+            />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-xl">⚔</span>
+            </div>
           </div>
-        </div>
+        )}
 
         <h2 className="font-display text-2xl font-semibold text-gold-gradient mb-3">
-          Chronicling Your Hero
+          {isWaiting ? 'Verification Required' : 'Chronicling Your Hero'}
         </h2>
 
         {status === 'error' ? (
@@ -104,6 +131,42 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
               {errorMsg}
             </p>
           </div>
+        ) : isWaiting ? (
+          <>
+            <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
+              Cloudflare is blocking the automated browser. Click the verification
+              checkbox in the preview below to continue.
+            </p>
+
+            {liveUrl && (
+              <div className="w-full max-w-sm mb-4 relative">
+                <div
+                  className="relative cursor-crosshair rounded-lg overflow-hidden border-2 border-gold-400/60 animate-pulse-slow"
+                  onClick={handlePreviewClick}
+                >
+                  <img
+                    key={liveTs}
+                    src={liveUrl}
+                    alt="Live browser view"
+                    className="w-full block bg-obsidian-700"
+                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3' }}
+                  />
+                  {/* Click-here overlay */}
+                  <div className="absolute inset-0 bg-black/10 flex items-end justify-center pb-3 pointer-events-none">
+                    <span className="flex items-center gap-1.5 font-ui text-xs text-white/80 bg-black/50 px-2.5 py-1 rounded-full">
+                      <MousePointer2 className="w-3 h-3" />
+                      {clickSent ? 'Click sent — waiting...' : 'Click anywhere to relay to browser'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <p className="font-ui text-xs text-parchment-300/30 max-w-xs leading-relaxed">
+              The preview updates every 2s. After clicking, wait a moment for the
+              page to respond.
+            </p>
+          </>
         ) : (
           <>
             <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
@@ -125,13 +188,12 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
               </p>
             </div>
 
-            {/* Live browser preview — shown as soon as the first screenshot is saved */}
+            {/* Live browser preview */}
             {liveUrl && (
               <div className="w-full max-w-sm mb-4">
                 <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
                   Live preview
                 </p>
-                {/* key forces React to swap the element, bypassing browser cache */}
                 <img
                   key={liveTs}
                   src={liveUrl}

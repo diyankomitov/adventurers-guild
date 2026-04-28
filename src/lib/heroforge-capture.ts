@@ -1,5 +1,5 @@
-// Use rebrowser-playwright (patches CDP Runtime.Enable — top Cloudflare detection signal)
-// combined with playwright-extra stealth (patches JS-accessible browser properties)
+// rebrowser-playwright patches CDP Runtime.Enable — top Cloudflare detection signal
+// playwright-extra stealth patches JS-accessible browser properties
 import { chromium as rebrowserChromium } from 'rebrowser-playwright'
 import { addExtra } from 'playwright-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
@@ -19,6 +19,7 @@ const VIEWPORT_WIDTH = 800
 const VIEWPORT_HEIGHT = 800
 
 export type ProgressCallback = (framesDone: number, stage: string) => void
+export type WaitForClickFn = () => Promise<{ x: number; y: number }>
 
 // Sample a 3x3 grid across the canvas — true if any non-transparent pixel found
 const WEBGL_GRID_CHECK = () => {
@@ -45,12 +46,25 @@ const WEBGL_GRID_CHECK = () => {
   return false
 }
 
+async function isCloudflareChallenge(page: { evaluate: Function }): Promise<boolean> {
+  return page.evaluate(() => {
+    const title = document.title.toLowerCase()
+    return (
+      title.includes('just a moment') ||
+      title.includes('checking your browser') ||
+      title.includes('attention required') ||
+      !!document.getElementById('challenge-form') ||
+      !!document.querySelector('[data-cf-turnstile]')
+    )
+  }).catch(() => false)
+}
+
 async function runCapture(
   navigateUrl: string,
   outputDir: string,
-  onProgress: ProgressCallback
+  onProgress: ProgressCallback,
+  waitForClick?: WaitForClickFn,
 ): Promise<void> {
-  // PLAYWRIGHT_PROXY=http://user:pass@host:port bypasses Cloudflare via residential IP
   const proxyServer = process.env.PLAYWRIGHT_PROXY
 
   const browser = await chromium.launch({
@@ -86,9 +100,7 @@ async function runCapture(
   const livePath = path.join(outputDir, 'debug-live.png')
 
   async function saveLive(): Promise<void> {
-    try {
-      await page.screenshot({ path: livePath })
-    } catch { /* non-critical */ }
+    try { await page.screenshot({ path: livePath }) } catch { /* non-critical */ }
   }
 
   async function debugSnapshot(label: string): Promise<string> {
@@ -117,47 +129,48 @@ async function runCapture(
       })
 
     await saveLive()
-    onProgress(0, 'Page loaded — checking for bot challenges...')
 
-    // Give Cloudflare up to 20s to self-resolve (sometimes the challenge passes automatically)
+    // Give Cloudflare up to 20s to self-resolve (managed JS challenge)
     let elapsed = 0
     while (elapsed < 20_000) {
-      const isChallenge = await page.evaluate(() => {
-        const title = document.title.toLowerCase()
-        const body = document.body?.innerText?.toLowerCase() ?? ''
-        return (
-          title.includes('just a moment') ||
-          title.includes('checking your browser') ||
-          title.includes('attention required') ||
-          body.includes('checking if the site connection is secure') ||
-          body.includes('verifying you are human') ||
-          !!document.getElementById('challenge-form') ||
-          !!document.querySelector('[data-cf-turnstile]')
-        )
-      }).catch(() => false)
-
-      if (!isChallenge) break
+      if (!await isCloudflareChallenge(page)) break
       await saveLive()
       await page.waitForTimeout(2_000)
       elapsed += 2_000
       onProgress(0, `Waiting for security check... (${elapsed / 1000}s)`)
     }
 
-    const stillChallenge = await page.evaluate(() => {
-      return (
-        document.title.toLowerCase().includes('just a moment') ||
-        !!document.getElementById('challenge-form')
-      )
-    }).catch(() => false)
+    // If still on challenge page, ask the user to click through it
+    if (await isCloudflareChallenge(page)) {
+      if (!waitForClick) {
+        const debug = await debugSnapshot('cloudflare-challenge')
+        throw new Error(
+          `Cloudflare bot detection triggered.\n` +
+          `Fix: set PLAYWRIGHT_PROXY=http://user:pass@host:port in Railway variables.\n${debug}`
+        )
+      }
 
-    if (stillChallenge) {
-      const debug = await debugSnapshot('cloudflare-challenge')
-      throw new Error(
-        `Cloudflare bot detection triggered.\n` +
-        `Railway uses datacenter IPs which Cloudflare flags as bots.\n` +
-        `Fix: set PLAYWRIGHT_PROXY=http://user:pass@host:port in Railway variables ` +
-        `to route the capture through a residential IP.\n${debug}`
-      )
+      onProgress(0, 'Click the verification checkbox in the live preview below ↓')
+      await saveLive()
+
+      // Relay user clicks until the challenge clears or we time out
+      const deadline = Date.now() + 3 * 60 * 1000
+      while (Date.now() < deadline) {
+        const { x, y } = await waitForClick()
+        await page.mouse.click(x, y)
+        await page.waitForTimeout(3_000)
+        await saveLive()
+
+        if (!await isCloudflareChallenge(page)) {
+          onProgress(0, 'Verification passed — continuing...')
+          break
+        }
+
+        if (Date.now() >= deadline) {
+          throw new Error('Cloudflare verification not resolved within 3 minutes of user interaction.')
+        }
+        onProgress(0, 'Still verifying — click again if a new challenge appeared ↓')
+      }
     }
 
     onProgress(0, 'Waiting for 3D viewer canvas...')
@@ -227,7 +240,8 @@ async function runCapture(
 export async function captureHeroForgeFrames(
   heroforgeUrl: string,
   characterId: string,
-  onProgress: ProgressCallback
+  onProgress: ProgressCallback,
+  waitForClick?: WaitForClickFn,
 ): Promise<{ frameCount: number }> {
   const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
   const outputDir = path.join(dataDir, 'characters', characterId)
@@ -239,7 +253,7 @@ export async function captureHeroForgeFrames(
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       if (attempt === 2) onProgress(0, 'Retrying capture...')
-      await runCapture(navigateUrl, outputDir, onProgress)
+      await runCapture(navigateUrl, outputDir, onProgress, waitForClick)
       return { frameCount: FRAME_COUNT }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
