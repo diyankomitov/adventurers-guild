@@ -20,8 +20,10 @@ export async function captureHeroForgeFrames(
 
   const browser = await chromium.launch({
     headless: true,
-    // Use the pre-installed Chromium that supports WebGL via SwiftShader
-    executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+    // In dev/sandbox: use pre-installed Chromium. In production: auto-detected from PLAYWRIGHT_BROWSERS_PATH.
+    ...(process.env.CHROMIUM_EXECUTABLE_PATH
+      ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH }
+      : {}),
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
