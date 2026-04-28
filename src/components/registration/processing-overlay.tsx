@@ -6,6 +6,7 @@ import { AlertCircle, MousePointer2 } from 'lucide-react'
 
 interface ProcessingOverlayProps {
   jobId: string
+  heroforgeUrl: string
   onComplete: () => void
   onError: (message: string) => void
 }
@@ -14,7 +15,7 @@ const TOTAL_FRAMES = 36
 const VIEWPORT_W = 800
 const VIEWPORT_H = 800
 
-export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOverlayProps) {
+export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: ProcessingOverlayProps) {
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState('Queued...')
   const [status, setStatus] = useState<'pending' | 'processing' | 'waiting_for_user' | 'complete' | 'error'>(
@@ -193,11 +194,27 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
               </p>
             </div>
 
-            {/* Live browser preview */}
+            {/* HeroForge iframe — try embedding first; falls back gracefully if blocked */}
+            <div className="w-full max-w-sm mb-4">
+              <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
+                HeroForge preview
+              </p>
+              <div className="relative w-full rounded-lg overflow-hidden border border-white/[0.08] bg-obsidian-700" style={{ aspectRatio: '1 / 1' }}>
+                <iframe
+                  src={heroforgeUrl}
+                  className="absolute inset-0 w-full h-full"
+                  allow="accelerometer; camera; gyroscope; xr-spatial-tracking"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                  title="HeroForge 3D viewer"
+                />
+              </div>
+            </div>
+
+            {/* Screenshot-based live preview (server-side view) */}
             {displayedSrc && (
               <div className="w-full max-w-sm mb-4">
                 <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
-                  Live preview
+                  Capture progress
                 </p>
                 <img
                   src={displayedSrc}

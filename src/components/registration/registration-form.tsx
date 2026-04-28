@@ -29,6 +29,7 @@ export function RegistrationForm() {
   const router = useRouter()
   const [jobId, setJobId] = useState<string | null>(null)
   const [characterId, setCharacterId] = useState<string | null>(null)
+  const [submittedHeroforgeUrl, setSubmittedHeroforgeUrl] = useState<string>('')
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const {
@@ -67,6 +68,7 @@ export function RegistrationForm() {
       }
       setCharacterId(character.id)
       setJobId(jid)
+      setSubmittedHeroforgeUrl(data.heroforgeUrl)
     } catch {
       setSubmitError('Network error. Please check your connection and try again.')
     }
@@ -76,6 +78,7 @@ export function RegistrationForm() {
     return (
       <ProcessingOverlay
         jobId={jobId}
+        heroforgeUrl={submittedHeroforgeUrl}
         onComplete={() => router.push(`/characters/${characterId}`)}
         onError={() => setJobId(null)}
       />

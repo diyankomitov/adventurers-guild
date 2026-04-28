@@ -6,9 +6,10 @@ import { ProcessingOverlay } from '@/components/registration/processing-overlay'
 interface Props {
   characterId: string
   jobId: string | null
+  heroforgeUrl: string
 }
 
-export function CharacterStatusClient({ characterId, jobId }: Props) {
+export function CharacterStatusClient({ characterId, jobId, heroforgeUrl }: Props) {
   const router = useRouter()
 
   if (!jobId) {
@@ -26,6 +27,7 @@ export function CharacterStatusClient({ characterId, jobId }: Props) {
     <div className="card-dark rounded-2xl overflow-hidden">
       <ProcessingOverlay
         jobId={jobId}
+        heroforgeUrl={heroforgeUrl}
         onComplete={() => router.refresh()}
         onError={() => router.refresh()}
       />

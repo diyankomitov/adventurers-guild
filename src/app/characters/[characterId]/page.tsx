@@ -11,6 +11,7 @@ import { PageContainer } from '@/components/layout/page-container'
 import { RotationViewer } from '@/components/rotation-viewer/rotation-viewer'
 import { CharacterStatusClient } from './character-status-client'
 import { ChevronLeft, Scroll, Users, ExternalLink, Download } from 'lucide-react'
+import { DeleteCharacterButton } from '@/components/characters/delete-character-button'
 
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
 
@@ -75,7 +76,11 @@ export default async function CharacterDetailPage({ params }: Props) {
               frameCount={character.frameCount}
             />
           ) : isPending ? (
-            <CharacterStatusClient characterId={character.id} jobId={character.jobId} />
+            <CharacterStatusClient
+              characterId={character.id}
+              jobId={character.jobId}
+              heroforgeUrl={character.heroforgeUrl}
+            />
           ) : (
             /* Error state */
             <div className="space-y-4">
@@ -182,6 +187,15 @@ export default async function CharacterDetailPage({ params }: Props) {
               Miniature capture in progress...
             </div>
           )}
+
+          {/* Delete */}
+          <div className="pt-2 border-t border-white/[0.06]">
+            <DeleteCharacterButton
+              characterId={character.id}
+              characterName={character.name}
+              partyId={character.partyId}
+            />
+          </div>
         </div>
       </div>
     </PageContainer>
