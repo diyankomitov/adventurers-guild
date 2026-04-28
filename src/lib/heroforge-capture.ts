@@ -4,17 +4,18 @@ import fs from 'fs/promises'
 import { zeroPad } from './utils'
 
 const FRAME_COUNT = 36
-const DEGREES_PER_FRAME = 360 / FRAME_COUNT // 10°
+const DEGREES_PER_FRAME = 360 / FRAME_COUNT
 const PIXELS_PER_DEGREE = 2
-const DRAG_PX = Math.round(DEGREES_PER_FRAME * PIXELS_PER_DEGREE) // 20px per frame
-// Smaller viewport = less GPU memory. 800×800 is plenty for gallery thumbnails.
+const DRAG_PX = Math.round(DEGREES_PER_FRAME * PIXELS_PER_DEGREE)
 const VIEWPORT_WIDTH = 800
 const VIEWPORT_HEIGHT = 800
+
+export type ProgressCallback = (framesDone: number, stage: string) => void
 
 async function runCapture(
   navigateUrl: string,
   outputDir: string,
-  onProgress: (framesDone: number) => void
+  onProgress: ProgressCallback
 ): Promise<void> {
   const browser = await chromium.launch({
     headless: true,
@@ -24,13 +25,12 @@ async function runCapture(
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',      // write shared mem to /tmp, not /dev/shm
-      '--use-angle=swiftshader',      // CPU-based WebGL via SwiftShader
+      '--disable-dev-shm-usage',
+      '--use-angle=swiftshader',
       '--use-gl=angle',
       '--ignore-gpu-blocklist',
       '--disable-gpu-sandbox',
       '--disable-blink-features=AutomationControlled',
-      // Reduce renderer memory usage
       '--js-flags=--max-old-space-size=256',
       '--disable-features=VizDisplayCompositor',
       '--disable-crash-reporter',
@@ -49,39 +49,80 @@ async function runCapture(
 
   const page = await context.newPage()
 
+  // Save a full-page screenshot + page info on any failure so we can diagnose
+  async function debugSnapshot(label: string): Promise<string> {
+    try {
+      const screenshotPath = path.join(outputDir, `debug-${label}.png`)
+      await page.screenshot({ path: screenshotPath, fullPage: true })
+      const title = await page.title().catch(() => '(no title)')
+      const url = page.url()
+      const bodyText = await page
+        .evaluate(() => document.body?.innerText?.slice(0, 400) ?? '')
+        .catch(() => '')
+      return `Page: "${title}" at ${url}\nBody preview: ${bodyText}\nDebug screenshot saved: ${screenshotPath}`
+    } catch {
+      return '(could not take debug snapshot)'
+    }
+  }
+
   try {
-    // domcontentloaded fires once HTML is parsed — does NOT wait for all 3D
-    // assets to finish downloading, which avoids OOM during initial load.
-    await page.goto(navigateUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    onProgress(0, 'Navigating to HeroForge...')
+    await page
+      .goto(navigateUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 })
+      .catch(async (err: Error) => {
+        const debug = await debugSnapshot('nav-failed')
+        throw new Error(`Navigation failed: ${err.message}\n${debug}`)
+      })
 
-    // Wait for the WebGL canvas to appear
-    await page.waitForSelector('canvas', { timeout: 60_000 })
+    onProgress(0, 'Page loaded — waiting for 3D viewer to initialise...')
 
-    // Wait until the GPU has rendered at least one frame (center pixel alpha > 0)
-    await page.waitForFunction(
-      () => {
-        const canvas = document.querySelector('canvas') as HTMLCanvasElement | null
-        if (!canvas) return false
-        const gl =
-          canvas.getContext('webgl2') ??
-          (canvas.getContext('webgl') as WebGLRenderingContext | null)
-        if (!gl) return false
-        const pixels = new Uint8Array(4)
-        gl.readPixels(
-          Math.floor(canvas.width / 2),
-          Math.floor(canvas.height / 2),
-          1, 1,
-          gl.RGBA, gl.UNSIGNED_BYTE,
-          pixels
+    // Wait for a canvas element to exist in the DOM
+    await page
+      .waitForSelector('canvas', { timeout: 120_000 })
+      .catch(async (err: Error) => {
+        const debug = await debugSnapshot('no-canvas')
+        throw new Error(
+          `3D viewer canvas never appeared after 2 minutes. ` +
+            `HeroForge may be blocking the headless browser or showing an error page.\n${debug}`
         )
-        return pixels[3] > 0
-      },
-      { timeout: 90_000, polling: 500 }
-    )
+      })
 
-    // Let textures and lighting stabilise
+    onProgress(0, 'Canvas found — waiting for WebGL render...')
+
+    // Wait until WebGL has rendered at least one non-transparent pixel
+    await page
+      .waitForFunction(
+        () => {
+          const canvas = document.querySelector('canvas') as HTMLCanvasElement | null
+          if (!canvas) return false
+          const gl =
+            canvas.getContext('webgl2') ??
+            (canvas.getContext('webgl') as WebGLRenderingContext | null)
+          if (!gl) return false
+          const pixels = new Uint8Array(4)
+          gl.readPixels(
+            Math.floor(canvas.width / 2),
+            Math.floor(canvas.height / 2),
+            1, 1,
+            gl.RGBA, gl.UNSIGNED_BYTE,
+            pixels
+          )
+          return pixels[3] > 0
+        },
+        { timeout: 180_000, polling: 500 }
+      )
+      .catch(async (err: Error) => {
+        const debug = await debugSnapshot('no-webgl-render')
+        throw new Error(
+          `Canvas appeared but WebGL never rendered any pixels after 3 minutes. ` +
+            `SwiftShader may not be initialising correctly.\n${debug}`
+        )
+      })
+
+    onProgress(0, 'Render detected — letting scene stabilise...')
     await page.waitForTimeout(3_000)
 
+    onProgress(0, 'Starting frame capture...')
     const cx = VIEWPORT_WIDTH / 2
     const cy = VIEWPORT_HEIGHT / 2
     await page.mouse.move(cx, cy)
@@ -96,10 +137,10 @@ async function runCapture(
       }
 
       const canvas = await page.$('canvas')
-      if (!canvas) throw new Error('Canvas element disappeared during capture')
+      if (!canvas) throw new Error(`Canvas disappeared at frame ${i}`)
       const framePath = path.join(outputDir, `frame-${zeroPad(i)}.png`)
       await canvas.screenshot({ path: framePath, type: 'png' })
-      onProgress(i + 1)
+      onProgress(i + 1, `Capturing pose ${i + 1} of ${FRAME_COUNT}...`)
     }
   } finally {
     await context.close()
@@ -110,7 +151,7 @@ async function runCapture(
 export async function captureHeroForgeFrames(
   heroforgeUrl: string,
   characterId: string,
-  onProgress: (framesDone: number) => void
+  onProgress: ProgressCallback
 ): Promise<{ frameCount: number }> {
   const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
   const outputDir = path.join(dataDir, 'characters', characterId)
@@ -118,18 +159,15 @@ export async function captureHeroForgeFrames(
 
   const navigateUrl = decodeURIComponent(heroforgeUrl)
 
-  // Retry once — page crashes are often transient OOM spikes
   let lastError: Error = new Error('Unknown capture error')
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
+      if (attempt === 2) onProgress(0, 'Retrying capture...')
       await runCapture(navigateUrl, outputDir, onProgress)
       return { frameCount: FRAME_COUNT }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
-      if (attempt < 2) {
-        onProgress(0) // reset progress indicator
-        await new Promise((r) => setTimeout(r, 3_000))
-      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 3_000))
     }
   }
   throw lastError

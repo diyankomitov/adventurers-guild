@@ -19,6 +19,7 @@ export async function GET(
       return NextResponse.json({
         status: job.status,
         progress: job.progress,
+        stage: job.stage,
         error: job.error,
       })
     }
@@ -35,6 +36,7 @@ export async function GET(
     return NextResponse.json({
       status: character.jobStatus,
       progress: character.frameCount,
+      stage: character.jobStatus === 'complete' ? 'Done!' : character.jobStatus,
       error: character.jobError,
     })
   } catch (err) {

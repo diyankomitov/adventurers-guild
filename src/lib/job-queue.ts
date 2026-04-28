@@ -10,6 +10,7 @@ export interface Job {
   heroforgeUrl: string
   status: 'pending' | 'processing' | 'complete' | 'error'
   progress: number // 0–36
+  stage: string
   error?: string
   createdAt: Date
 }
@@ -27,6 +28,7 @@ class JobQueue {
       heroforgeUrl,
       status: 'pending',
       progress: 0,
+      stage: 'Queued...',
       createdAt: new Date(),
     }
     this.jobs.set(jobId, job)
@@ -60,8 +62,9 @@ class JobQueue {
       .run()
 
     try {
-      await captureHeroForgeFrames(job.heroforgeUrl, job.characterId, (done) => {
+      await captureHeroForgeFrames(job.heroforgeUrl, job.characterId, (done, stage) => {
         job.progress = done
+        job.stage = stage
       })
 
       job.status = 'complete'

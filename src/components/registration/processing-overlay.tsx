@@ -14,6 +14,7 @@ const TOTAL_FRAMES = 36
 
 export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOverlayProps) {
   const [progress, setProgress] = useState(0)
+  const [stage, setStage] = useState('Queued...')
   const [status, setStatus] = useState<'pending' | 'processing' | 'complete' | 'error'>(
     'pending'
   )
@@ -25,10 +26,16 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
       try {
         const res = await fetch(`/api/jobs/${jobId}`)
         if (!res.ok) return
-        const data = await res.json() as { status: string; progress: number; error?: string }
+        const data = await res.json() as {
+          status: string
+          progress: number
+          stage?: string
+          error?: string
+        }
 
         setStatus(data.status as typeof status)
         setProgress(data.progress ?? 0)
+        if (data.stage) setStage(data.stage)
 
         if (data.status === 'complete') {
           clearInterval(intervalRef.current!)
@@ -49,12 +56,6 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
   }, [jobId, onComplete, onError])
 
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
-  const statusText =
-    status === 'pending'
-      ? 'Preparing the ritual...'
-      : progress > 0
-        ? `Capturing pose ${progress} of ${TOTAL_FRAMES}...`
-        : 'Summoning your adventurer...'
 
   return (
     <AnimatePresence>
@@ -94,7 +95,7 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
         ) : (
           <>
             <p className="font-body text-base text-parchment-300/70 mb-8 max-w-sm">
-              {statusText}
+              {stage}
             </p>
 
             {/* Progress bar */}
