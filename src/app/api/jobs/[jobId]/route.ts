@@ -21,6 +21,7 @@ export async function GET(
         progress: job.progress,
         stage: job.stage,
         error: job.error,
+        characterId: job.characterId,
       })
     }
 
@@ -38,6 +39,7 @@ export async function GET(
       progress: character.frameCount,
       stage: character.jobStatus === 'complete' ? 'Done!' : character.jobStatus,
       error: character.jobError,
+      characterId: character.id,
     })
   } catch (err) {
     console.error('[GET /api/jobs/[jobId]]', err)

@@ -74,11 +74,21 @@ async function runCapture(
   })
 
   const page = await context.newPage()
+  const livePath = path.join(outputDir, 'debug-live.png')
+
+  // Saves a full-page screenshot to debug-live.png for the processing overlay
+  async function saveLive(): Promise<void> {
+    try {
+      await page.screenshot({ path: livePath })
+    } catch { /* ignore — non-critical */ }
+  }
 
   async function debugSnapshot(label: string): Promise<string> {
     try {
       const screenshotPath = path.join(outputDir, `debug-${label}.png`)
       await page.screenshot({ path: screenshotPath, fullPage: true })
+      // Also update the live preview so the overlay shows the failure state
+      await fs.copyFile(screenshotPath, livePath).catch(() => {})
       const title = await page.title().catch(() => '(no title)')
       const url = page.url()
       const bodyText = await page
@@ -99,6 +109,7 @@ async function runCapture(
         throw new Error(`Navigation failed: ${err.message}\n${debug}`)
       })
 
+    await saveLive()
     onProgress(0, 'Page loaded — checking for bot challenges...')
 
     // Give Cloudflare up to 15s to resolve if the challenge page is showing
@@ -119,12 +130,12 @@ async function runCapture(
       }).catch(() => false)
 
       if (!isChallenge) break
+      await saveLive()
       await page.waitForTimeout(2_000)
       elapsed += 2_000
       onProgress(0, `Waiting for security check... (${elapsed / 1000}s)`)
     }
 
-    // Final check — if still on challenge page after waiting, fail fast
     const stillChallenge = await page.evaluate(() => {
       return (
         document.title.toLowerCase().includes('just a moment') ||
@@ -140,6 +151,7 @@ async function runCapture(
     }
 
     onProgress(0, 'Waiting for 3D viewer canvas...')
+    await saveLive()
 
     await page
       .waitForSelector('canvas', { timeout: 60_000 })
@@ -151,8 +163,8 @@ async function runCapture(
       })
 
     onProgress(0, 'Canvas found — clicking to activate viewer...')
+    await saveLive()
 
-    // Click the canvas center to trigger any "click to start" interaction
     const cx = VIEWPORT_WIDTH / 2
     const cy = VIEWPORT_HEIGHT / 2
     await page.mouse.click(cx, cy)
@@ -165,19 +177,19 @@ async function runCapture(
     while (Date.now() < renderDeadline) {
       rendered = await page.evaluate(WEBGL_GRID_CHECK).catch(() => false)
       if (rendered) break
-      const remaining = Math.ceil((renderDeadline - Date.now()) / 1000)
-      onProgress(0, `Waiting for 3D render... (${60 - remaining}s)`)
+      await saveLive()
+      const secondsElapsed = Math.round((60_000 - (renderDeadline - Date.now())) / 1000)
+      onProgress(0, `Waiting for 3D render... (${secondsElapsed}s)`)
       await page.waitForTimeout(2_000)
     }
 
     if (!rendered) {
-      // Take a snapshot but proceed anyway — maybe the background is transparent
-      // and the model is rendered with a different blend mode
       await debugSnapshot('no-webgl-render')
       onProgress(0, 'Render check inconclusive — proceeding with capture...')
     }
 
     onProgress(0, 'Letting scene stabilise...')
+    await saveLive()
     await page.waitForTimeout(3_000)
 
     onProgress(0, 'Starting frame capture...')
@@ -196,6 +208,8 @@ async function runCapture(
       if (!canvas) throw new Error(`Canvas disappeared at frame ${i}`)
       const framePath = path.join(outputDir, `frame-${zeroPad(i)}.png`)
       await canvas.screenshot({ path: framePath, type: 'png' })
+      // Mirror each captured frame to the live preview
+      await fs.copyFile(framePath, livePath).catch(() => {})
       onProgress(i + 1, `Capturing pose ${i + 1} of ${FRAME_COUNT}...`)
     }
   } finally {

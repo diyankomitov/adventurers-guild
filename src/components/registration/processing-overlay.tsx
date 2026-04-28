@@ -19,6 +19,8 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
     'pending'
   )
   const [errorMsg, setErrorMsg] = useState('')
+  const [characterId, setCharacterId] = useState<string | null>(null)
+  const [liveTs, setLiveTs] = useState(0)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -31,11 +33,16 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
           progress: number
           stage?: string
           error?: string
+          characterId?: string
         }
 
         setStatus(data.status as typeof status)
         setProgress(data.progress ?? 0)
         if (data.stage) setStage(data.stage)
+        if (data.characterId) {
+          setCharacterId(data.characterId)
+          setLiveTs(Date.now())
+        }
 
         if (data.status === 'complete') {
           clearInterval(intervalRef.current!)
@@ -56,6 +63,9 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
   }, [jobId, onComplete, onError])
 
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
+  const liveUrl = characterId
+    ? `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
+    : null
 
   return (
     <AnimatePresence>
@@ -64,14 +74,14 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.96 }}
         transition={{ duration: 0.3 }}
-        className="flex flex-col items-center justify-center py-20 px-8 text-center"
+        className="flex flex-col items-center justify-center py-12 px-8 text-center"
       >
         {/* Rune spinner */}
-        <div className="relative mb-8">
+        <div className="relative mb-6">
           <motion.div
             animate={{ rotate: 360 }}
             transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
-            className="w-20 h-20 rounded-full border-2 border-gold-500/30 border-t-gold-400"
+            className="w-16 h-16 rounded-full border-2 border-gold-500/30 border-t-gold-400"
           />
           <motion.div
             animate={{ rotate: -360 }}
@@ -79,7 +89,7 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
             className="absolute inset-2 rounded-full border border-dashed border-gold-500/20"
           />
           <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-2xl">⚔</span>
+            <span className="text-xl">⚔</span>
           </div>
         </div>
 
@@ -90,16 +100,18 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
         {status === 'error' ? (
           <div className="flex flex-col items-center gap-4">
             <AlertCircle className="w-8 h-8 text-blood-400" />
-            <p className="font-body text-base text-parchment-300/70">{errorMsg}</p>
+            <p className="font-body text-sm text-parchment-300/70 whitespace-pre-wrap break-words max-w-sm">
+              {errorMsg}
+            </p>
           </div>
         ) : (
           <>
-            <p className="font-body text-base text-parchment-300/70 mb-8 max-w-sm">
+            <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
               {stage}
             </p>
 
             {/* Progress bar */}
-            <div className="w-full max-w-xs">
+            <div className="w-full max-w-xs mb-6">
               <div className="h-1.5 bg-obsidian-600 rounded-full overflow-hidden">
                 <motion.div
                   className="h-full bg-gradient-to-r from-gold-500 to-gold-300 rounded-full"
@@ -113,7 +125,24 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
               </p>
             </div>
 
-            <p className="font-ui text-xs text-parchment-300/30 mt-6 max-w-xs leading-relaxed">
+            {/* Live browser preview — shown as soon as the first screenshot is saved */}
+            {liveUrl && (
+              <div className="w-full max-w-sm mb-4">
+                <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
+                  Live preview
+                </p>
+                {/* key forces React to swap the element, bypassing browser cache */}
+                <img
+                  key={liveTs}
+                  src={liveUrl}
+                  alt="Live capture preview"
+                  className="w-full rounded-lg border border-white/[0.08] bg-obsidian-700"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                />
+              </div>
+            )}
+
+            <p className="font-ui text-xs text-parchment-300/30 max-w-xs leading-relaxed">
               We&apos;re capturing 36 poses of your miniature. This may take up to a minute.
             </p>
           </>
