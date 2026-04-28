@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "npx drizzle-kit push && next start",
+    "start": "mkdir -p ${DATA_DIR:-data}/characters && npx drizzle-kit push && next start",
     "lint": "next lint",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
