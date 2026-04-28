@@ -1,14 +1,9 @@
-// rebrowser-playwright patches CDP Runtime.Enable — top Cloudflare detection signal
-// playwright-extra stealth patches JS-accessible browser properties
-import { chromium as rebrowserChromium } from 'rebrowser-playwright'
-import { addExtra } from 'playwright-extra'
+import { chromium } from 'playwright-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import path from 'path'
 import fs from 'fs/promises'
 import { zeroPad } from './utils'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const chromium = addExtra(rebrowserChromium as any)
 chromium.use(StealthPlugin())
 
 const FRAME_COUNT = 36
