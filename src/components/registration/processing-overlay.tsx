@@ -22,9 +22,6 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
     'pending'
   )
   const [errorMsg, setErrorMsg] = useState('')
-  const [characterId, setCharacterId] = useState<string | null>(null)
-  const [liveTs, setLiveTs] = useState(0)
-  const [displayedSrc, setDisplayedSrc] = useState<string | null>(null)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -41,16 +38,11 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
           progress: number
           stage?: string
           error?: string
-          characterId?: string
         }
 
         setStatus(data.status as typeof status)
         setProgress(data.progress ?? 0)
         if (data.stage) setStage(data.stage)
-        if (data.characterId) {
-          setCharacterId(data.characterId)
-          setLiveTs(Date.now())
-        }
 
         if (data.status === 'complete') {
           clearInterval(intervalRef.current!)
@@ -68,18 +60,9 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
     return () => clearInterval(intervalRef.current!)
   }, [jobId, onComplete, onError])
 
-  // Preload screenshot for the normal processing view
+  // CDP screencast via SSE — active for all non-terminal states
   useEffect(() => {
-    if (!characterId || !liveTs) return
-    const url = `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
-    const img = new window.Image()
-    img.onload = () => setDisplayedSrc(url)
-    img.src = url
-  }, [characterId, liveTs])
-
-  // CDP screencast via SSE — active only while waiting_for_user
-  useEffect(() => {
-    if (status !== 'waiting_for_user') {
+    if (status === 'complete' || status === 'error') {
       esRef.current?.close()
       esRef.current = null
       return
@@ -131,24 +114,6 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
         transition={{ duration: 0.3 }}
         className="flex flex-col items-center justify-center py-12 px-8 text-center"
       >
-        {!isWaiting && (
-          <div className="relative mb-6">
-            <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
-              className="w-16 h-16 rounded-full border-2 border-gold-500/30 border-t-gold-400"
-            />
-            <motion.div
-              animate={{ rotate: -360 }}
-              transition={{ repeat: Infinity, duration: 4.5, ease: 'linear' }}
-              className="absolute inset-2 rounded-full border border-dashed border-gold-500/20"
-            />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-xl">⚔</span>
-            </div>
-          </div>
-        )}
-
         <h2 className="font-display text-2xl font-semibold text-gold-gradient mb-3">
           {isWaiting ? 'Verification Required' : 'Chronicling Your Hero'}
         </h2>
@@ -161,62 +126,51 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
             </p>
           </div>
 
-        ) : isWaiting ? (
+        ) : (
           <>
-            <p className="font-body text-sm text-parchment-300/60 mb-4 max-w-sm">
-              Click the verification checkbox below. Your clicks go directly to the browser.
-            </p>
+            {isWaiting ? (
+              <p className="font-body text-sm text-parchment-300/60 mb-4 max-w-sm">
+                Click the verification checkbox below. Your clicks go directly to the browser.
+              </p>
+            ) : (
+              <>
+                <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
+                  {stage}
+                </p>
+                <div className="w-full max-w-xs mb-5">
+                  <div className="h-1.5 bg-obsidian-600 rounded-full overflow-hidden">
+                    <motion.div
+                      className="h-full bg-gradient-to-r from-gold-500 to-gold-300 rounded-full"
+                      initial={{ width: '0%' }}
+                      animate={{ width: `${Math.max(pct, status === 'processing' ? 5 : 0)}%` }}
+                      transition={{ duration: 0.4, ease: 'easeOut' }}
+                    />
+                  </div>
+                  <p className="font-ui text-xs text-parchment-300/40 mt-2 text-right">{pct}%</p>
+                </div>
+              </>
+            )}
 
-            {/* Live interactive canvas — driven by CDP screencast frames over SSE */}
+            {/* Live canvas — driven by CDP screencast frames over SSE throughout capture */}
             <div className="w-full max-w-sm mb-3">
               <canvas
                 ref={canvasRef}
                 width={VIEWPORT_W}
                 height={VIEWPORT_H}
-                onClick={handleCanvasPointer}
-                className="w-full rounded-lg border-2 border-gold-400/50 bg-obsidian-700 cursor-crosshair"
+                onClick={isWaiting ? handleCanvasPointer : undefined}
+                className={`w-full rounded-lg border bg-obsidian-700 ${
+                  isWaiting
+                    ? 'border-2 border-gold-400/50 cursor-crosshair'
+                    : 'border-white/[0.08] cursor-default'
+                }`}
                 style={{ aspectRatio: '1 / 1' }}
               />
             </div>
 
             <p className="font-ui text-xs text-parchment-300/30 max-w-xs leading-relaxed">
-              Live browser view · clicks are forwarded in real time
-            </p>
-          </>
-
-        ) : (
-          <>
-            <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
-              {stage}
-            </p>
-
-            <div className="w-full max-w-xs mb-6">
-              <div className="h-1.5 bg-obsidian-600 rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-gradient-to-r from-gold-500 to-gold-300 rounded-full"
-                  initial={{ width: '0%' }}
-                  animate={{ width: `${Math.max(pct, status === 'processing' ? 5 : 0)}%` }}
-                  transition={{ duration: 0.4, ease: 'easeOut' }}
-                />
-              </div>
-              <p className="font-ui text-xs text-parchment-300/40 mt-2 text-right">{pct}%</p>
-            </div>
-
-            {displayedSrc && (
-              <div className="w-full max-w-sm mb-4">
-                <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
-                  Live preview
-                </p>
-                <img
-                  src={displayedSrc}
-                  alt="Live capture preview"
-                  className="w-full rounded-lg border border-white/[0.08] bg-obsidian-700"
-                />
-              </div>
-            )}
-
-            <p className="font-ui text-xs text-parchment-300/30 max-w-xs leading-relaxed">
-              We&apos;re capturing 36 poses of your miniature. This may take up to a minute.
+              {isWaiting
+                ? 'Live browser view · clicks are forwarded in real time'
+                : 'Live browser view · capturing 36 poses of your miniature'}
             </p>
           </>
         )}

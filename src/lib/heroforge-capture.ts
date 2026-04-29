@@ -120,12 +120,11 @@ async function runCapture(
     }
   }
 
-  // Starts a CDP screencast and registers the mouse relay so the user can
-  // interact with the live browser view from the processing overlay.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let cdpSession: any = null
 
-  async function startInteractiveMode(): Promise<void> {
+  async function startScreencast(): Promise<void> {
+    if (cdpSession) return
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       cdpSession = await (context as any).newCDPSession(page)
@@ -142,22 +141,29 @@ async function runCapture(
         void cdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId })
       })
     } catch {
-      // CDP not available — fall back to screenshot polling silently
       cdpSession = null
     }
-
-    hooks.setRelayHandler?.((x: number, y: number) => {
-      void page.mouse.click(x, y)
-    })
   }
 
-  async function stopInteractiveMode(): Promise<void> {
-    hooks.setRelayHandler?.(null)
+  async function stopScreencast(): Promise<void> {
     if (cdpSession) {
       await cdpSession.send('Page.stopScreencast').catch(() => {})
       cdpSession = null
     }
   }
+
+  function enableInteractive(): void {
+    hooks.setRelayHandler?.((x: number, y: number) => {
+      void page.mouse.click(x, y)
+    })
+  }
+
+  function disableInteractive(): void {
+    hooks.setRelayHandler?.(null)
+  }
+
+  // Start screencast immediately so the overlay shows live frames throughout
+  await startScreencast()
 
   try {
     onProgress(0, 'Navigating to HeroForge...')
@@ -180,9 +186,9 @@ async function runCapture(
       onProgress(0, `Waiting for security check... (${elapsed / 1000}s)`)
     }
 
-    // If still challenged, open the live interactive view so the user can click through
+    // If still challenged, enable click relay so the user can interact
     if (await isCloudflareChallenge(page)) {
-      await startInteractiveMode()
+      enableInteractive()
       onProgress(0, 'Click the verification checkbox in the live window below ↓')
 
       const deadline = Date.now() + 5 * 60 * 1000
@@ -191,7 +197,7 @@ async function runCapture(
         await page.waitForTimeout(500)
       }
 
-      await stopInteractiveMode()
+      disableInteractive()
 
       if (await isCloudflareChallenge(page)) {
         const debug = await debugSnapshot('cloudflare-challenge')
@@ -263,7 +269,8 @@ async function runCapture(
       onProgress(i + 1, `Capturing pose ${i + 1} of ${FRAME_COUNT}...`)
     }
   } finally {
-    await stopInteractiveMode()
+    disableInteractive()
+    await stopScreencast()
     await context.close()
     await browser.close()
   }
