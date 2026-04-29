@@ -162,9 +162,6 @@ async function runCapture(
     hooks.setRelayHandler?.(null)
   }
 
-  // Start screencast immediately so the overlay shows live frames throughout
-  await startScreencast()
-
   try {
     onProgress(0, 'Navigating to HeroForge...')
     await page
@@ -174,6 +171,8 @@ async function runCapture(
         throw new Error(`Navigation failed: ${err.message}\n${debug}`)
       })
 
+    // Start screencast after navigation so the CDP session attaches to a live page
+    await startScreencast()
     await saveLive()
 
     // Give Cloudflare up to 20s to self-resolve

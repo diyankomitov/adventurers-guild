@@ -14,6 +14,8 @@ interface ProcessingOverlayProps {
 const TOTAL_FRAMES = 36
 const VIEWPORT_W = 800
 const VIEWPORT_H = 800
+// Show "connecting…" badge if no frame received within this many ms
+const STALE_THRESHOLD_MS = 6_000
 
 export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOverlayProps) {
   const [progress, setProgress] = useState(0)
@@ -22,10 +24,14 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
     'pending'
   )
   const [errorMsg, setErrorMsg] = useState('')
+  const [lastFrameTs, setLastFrameTs] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const esRef = useRef<EventSource | null>(null)
+  const statusRef = useRef(status)
+  statusRef.current = status
 
   // Poll job status
   useEffect(() => {
@@ -60,35 +66,61 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
     return () => clearInterval(intervalRef.current!)
   }, [jobId, onComplete, onError])
 
-  // CDP screencast via SSE — active for all non-terminal states
+  // CDP screencast via SSE — connect once per jobId, auto-reconnect on error.
+  // Does NOT reconnect on status changes to avoid dropping frames mid-capture.
+  useEffect(() => {
+    let destroyed = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    function connect() {
+      if (destroyed) return
+      const es = new EventSource(`/api/jobs/${jobId}/screencast`)
+      esRef.current = es
+
+      es.onmessage = (e) => {
+        setLastFrameTs(Date.now())
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        const img = new window.Image()
+        img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        img.src = `data:image/jpeg;base64,${e.data}`
+      }
+
+      es.onerror = () => {
+        es.close()
+        esRef.current = null
+        // Only retry if job is still active
+        if (!destroyed && statusRef.current !== 'complete' && statusRef.current !== 'error') {
+          retryTimer = setTimeout(connect, 3_000)
+        }
+      }
+    }
+
+    connect()
+
+    return () => {
+      destroyed = true
+      if (retryTimer) clearTimeout(retryTimer)
+      esRef.current?.close()
+      esRef.current = null
+    }
+  }, [jobId])
+
+  // Tick every 2s to keep the stale badge accurate
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 2_000)
+    return () => clearInterval(t)
+  }, [])
+
+  // Close SSE once job reaches a terminal state
   useEffect(() => {
     if (status === 'complete' || status === 'error') {
       esRef.current?.close()
       esRef.current = null
-      return
     }
-
-    // Already connected
-    if (esRef.current) return
-
-    const es = new EventSource(`/api/jobs/${jobId}/screencast`)
-    esRef.current = es
-
-    es.onmessage = (e) => {
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      const img = new window.Image()
-      img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      img.src = `data:image/jpeg;base64,${e.data}`
-    }
-
-    return () => {
-      es.close()
-      esRef.current = null
-    }
-  }, [status, jobId])
+  }, [status])
 
   // Forward pointer events on the canvas to the Playwright browser
   const handleCanvasPointer = useCallback(async (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -104,6 +136,7 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
 
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
   const isWaiting = status === 'waiting_for_user'
+  const isStale = lastFrameTs === 0 || now - lastFrameTs > STALE_THRESHOLD_MS
 
   return (
     <AnimatePresence>
@@ -151,8 +184,8 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
               </>
             )}
 
-            {/* Live canvas — driven by CDP screencast frames over SSE throughout capture */}
-            <div className="w-full max-w-sm mb-3">
+            {/* Live canvas — CDP screencast frames via SSE */}
+            <div className="relative w-full max-w-sm mb-3">
               <canvas
                 ref={canvasRef}
                 width={VIEWPORT_W}
@@ -165,6 +198,14 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
                 }`}
                 style={{ aspectRatio: '1 / 1' }}
               />
+
+              {/* Connection status badge */}
+              <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-obsidian-900/80 backdrop-blur-sm border border-white/[0.08]">
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${isStale ? 'bg-parchment-300/30 animate-pulse' : 'bg-green-400'}`} />
+                <span className="font-ui text-[10px] text-parchment-300/40">
+                  {isStale ? 'connecting…' : 'live'}
+                </span>
+              </div>
             </div>
 
             <p className="font-ui text-xs text-parchment-300/30 max-w-xs leading-relaxed">
