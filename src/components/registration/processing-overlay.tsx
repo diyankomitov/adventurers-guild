@@ -25,6 +25,7 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
   )
   const [errorMsg, setErrorMsg] = useState('')
   const [lastFrameTs, setLastFrameTs] = useState(0)
+  const [lastPingTs, setLastPingTs] = useState(0)
   const [now, setNow] = useState(() => Date.now())
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -88,6 +89,10 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
         img.src = `data:image/jpeg;base64,${e.data}`
       }
 
+      // Heartbeat: server sends a ping every 10s so we can tell
+      // "connected but page is loading" from "actually disconnected"
+      es.addEventListener('ping', () => setLastPingTs(Date.now()))
+
       es.onerror = () => {
         es.close()
         esRef.current = null
@@ -136,7 +141,14 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
 
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
   const isWaiting = status === 'waiting_for_user'
-  const isStale = lastFrameTs === 0 || now - lastFrameTs > STALE_THRESHOLD_MS
+
+  // Three badge states:
+  // 'live'        — frames arriving (green)
+  // 'loading'     — connected (ping received) but page not rendering yet (amber)
+  // 'connecting'  — no heartbeat either, SSE is down (grey pulse)
+  const hasRecentFrame = lastFrameTs > 0 && now - lastFrameTs < STALE_THRESHOLD_MS
+  const hasRecentPing  = lastPingTs > 0  && now - lastPingTs  < 25_000
+  const badgeState = hasRecentFrame ? 'live' : hasRecentPing ? 'loading' : 'connecting'
 
   return (
     <AnimatePresence>
@@ -201,9 +213,15 @@ export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOver
 
               {/* Connection status badge */}
               <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-obsidian-900/80 backdrop-blur-sm border border-white/[0.08]">
-                <span className={`inline-block w-1.5 h-1.5 rounded-full ${isStale ? 'bg-parchment-300/30 animate-pulse' : 'bg-green-400'}`} />
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                  badgeState === 'live'
+                    ? 'bg-green-400'
+                    : badgeState === 'loading'
+                      ? 'bg-gold-400 animate-pulse'
+                      : 'bg-parchment-300/30 animate-pulse'
+                }`} />
                 <span className="font-ui text-[10px] text-parchment-300/40">
-                  {isStale ? 'connecting…' : 'live'}
+                  {badgeState === 'live' ? 'live' : badgeState === 'loading' ? 'loading…' : 'connecting…'}
                 </span>
               </div>
             </div>

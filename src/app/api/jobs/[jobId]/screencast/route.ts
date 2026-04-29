@@ -17,17 +17,19 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
-      const onFrame = (frame: string) => {
-        try {
-          controller.enqueue(encoder.encode(`data: ${frame}\n\n`))
-        } catch {
-          // Client disconnected — will be cleaned up by abort signal
-        }
+      const enqueue = (chunk: string) => {
+        try { controller.enqueue(encoder.encode(chunk)) } catch { /* client disconnected */ }
       }
 
+      const onFrame = (frame: string) => enqueue(`data: ${frame}\n\n`)
       jobQueue.subscribeFrames(jobId, onFrame)
 
+      // Heartbeat: lets the client distinguish "connected, page is loading"
+      // from "actually disconnected" when no screencast frames are coming
+      const pingInterval = setInterval(() => enqueue('event: ping\ndata: \n\n'), 10_000)
+
       req.signal.addEventListener('abort', () => {
+        clearInterval(pingInterval)
         jobQueue.unsubscribeFrames(jobId, onFrame)
         controller.close()
       })

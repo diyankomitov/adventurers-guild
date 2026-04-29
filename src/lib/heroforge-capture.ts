@@ -122,12 +122,20 @@ async function runCapture(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let cdpSession: any = null
+  let screencastStopped = false
 
   async function startScreencast(): Promise<void> {
-    if (cdpSession) return
+    if (cdpSession || screencastStopped) return
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       cdpSession = await (context as any).newCDPSession(page)
+
+      // Restart automatically if the CDP session drops (e.g. during page navigation)
+      cdpSession.on('disconnect', () => {
+        cdpSession = null
+        if (!screencastStopped) setTimeout(() => void startScreencast(), 1_000)
+      })
+
       await cdpSession.send('Page.startScreencast', {
         format: 'jpeg',
         quality: 70,
@@ -138,14 +146,18 @@ async function runCapture(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       cdpSession.on('Page.screencastFrame', (params: any) => {
         hooks.onScreencastFrame?.(params.data)
-        void cdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId })
+        // Must ack each frame or the browser won't send the next one
+        cdpSession?.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {})
       })
     } catch {
       cdpSession = null
+      // Retry on launch failure
+      if (!screencastStopped) setTimeout(() => void startScreencast(), 2_000)
     }
   }
 
   async function stopScreencast(): Promise<void> {
+    screencastStopped = true
     if (cdpSession) {
       await cdpSession.send('Page.stopScreencast').catch(() => {})
       cdpSession = null
