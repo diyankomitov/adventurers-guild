@@ -78,14 +78,19 @@ async function runCapture(
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      // Software WebGL via ANGLE + SwiftShader
       '--use-angle=swiftshader',
       '--use-gl=angle',
       '--ignore-gpu-blocklist',
       '--disable-gpu-sandbox',
+      // Prevent Chrome throttling headless tabs as "background" — critical for 3D rendering
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--disable-blink-features=AutomationControlled',
-      '--js-flags=--max-old-space-size=256',
-      '--disable-features=VizDisplayCompositor',
       '--disable-crash-reporter',
+      // NOTE: --disable-features=VizDisplayCompositor removed — breaks WebGL pipeline
+      // NOTE: --js-flags=--max-old-space-size=256 removed — too low for 3D asset loading
     ],
   })
 
@@ -98,6 +103,18 @@ async function runCapture(
   })
 
   const page = await context.newPage()
+
+  // HeroForge pauses its Three.js render loop when the page is hidden.
+  // Headless Chrome reports the page as visible by default, but spoofing
+  // it explicitly prevents any edge-case where the tab enters a background state.
+  await page.addInitScript(() => {
+    Object.defineProperty(document, 'hidden', { get: () => false })
+    Object.defineProperty(document, 'visibilityState', { get: () => 'visible' })
+    document.addEventListener('visibilitychange', (e) => e.stopImmediatePropagation(), true)
+    // Give the app a realistic CPU count so Three.js / Draco don't underprovision workers
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 })
+  })
+
   const livePath = path.join(outputDir, 'debug-live.png')
 
   async function saveLive(): Promise<void> {
