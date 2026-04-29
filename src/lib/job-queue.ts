@@ -13,11 +13,10 @@ export interface Job {
   stage: string
   error?: string
   createdAt: Date
-  // Resolver set when status === 'waiting_for_user'; cleared on each interaction
-  _pendingClick?: {
-    resolve: (coords: { x: number; y: number }) => void
-    reject: (err: Error) => void
-  }
+  // Set while status === 'waiting_for_user'; forwards clicks to the live browser
+  _relayMouseEvent?: (x: number, y: number) => void
+  // Callbacks receiving base64-JPEG screencast frames
+  _frameSubscribers: Set<(frame: string) => void>
 }
 
 class JobQueue {
@@ -35,6 +34,7 @@ class JobQueue {
       progress: 0,
       stage: 'Queued...',
       createdAt: new Date(),
+      _frameSubscribers: new Set(),
     }
     this.jobs.set(jobId, job)
     this.queue.push(jobId)
@@ -52,15 +52,22 @@ class JobQueue {
     return this.jobs.get(jobId)
   }
 
-  /** Called by the interact API route to forward a user click to the paused capture. */
+  /** Forwards a mouse click to the running Playwright page (called from the interact API). */
   relayClick(jobId: string, coords: { x: number; y: number }): boolean {
     const job = this.jobs.get(jobId)
-    if (!job?._pendingClick) return false
-    const { resolve } = job._pendingClick
-    job._pendingClick = undefined
-    job.status = 'processing'
-    resolve(coords)
+    if (!job?._relayMouseEvent) return false
+    job._relayMouseEvent(coords.x, coords.y)
     return true
+  }
+
+  /** Subscribe to live CDP screencast frames for a job. */
+  subscribeFrames(jobId: string, cb: (frame: string) => void): void {
+    this.jobs.get(jobId)?._frameSubscribers.add(cb)
+  }
+
+  /** Unsubscribe from screencast frames. */
+  unsubscribeFrames(jobId: string, cb: (frame: string) => void): void {
+    this.jobs.get(jobId)?._frameSubscribers.delete(cb)
   }
 
   private async processNext(): Promise<void> {
@@ -76,22 +83,6 @@ class JobQueue {
       .where(eq(characters.id, job.characterId))
       .run()
 
-    // Pauses the capture and waits for the user to click in the overlay.
-    // Each call returns a Promise that resolves with the next click coordinates.
-    const waitForClick = (): Promise<{ x: number; y: number }> => {
-      job.status = 'waiting_for_user'
-      return new Promise((resolve, reject) => {
-        job._pendingClick = { resolve, reject }
-        // Auto-fail if user doesn't interact within 5 minutes
-        setTimeout(() => {
-          if (job._pendingClick) {
-            job._pendingClick = undefined
-            reject(new Error('Timed out waiting for user verification (5 minutes)'))
-          }
-        }, 5 * 60 * 1000)
-      })
-    }
-
     try {
       await captureHeroForgeFrames(
         job.heroforgeUrl,
@@ -100,7 +91,20 @@ class JobQueue {
           job.progress = done
           job.stage = stage
         },
-        waitForClick,
+        {
+          onScreencastFrame: (frame) => {
+            job._frameSubscribers.forEach((cb) => cb(frame))
+          },
+          setRelayHandler: (handler) => {
+            if (handler) {
+              job.status = 'waiting_for_user'
+              job._relayMouseEvent = handler
+            } else {
+              if (job.status === 'waiting_for_user') job.status = 'processing'
+              delete job._relayMouseEvent
+            }
+          },
+        },
       )
 
       job.status = 'complete'

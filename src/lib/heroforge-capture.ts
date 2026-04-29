@@ -14,7 +14,13 @@ const VIEWPORT_WIDTH = 800
 const VIEWPORT_HEIGHT = 800
 
 export type ProgressCallback = (framesDone: number, stage: string) => void
-export type WaitForClickFn = () => Promise<{ x: number; y: number }>
+
+export interface CaptureHooks {
+  /** Called with each base64-JPEG screencast frame while user verification is active */
+  onScreencastFrame?: (frame: string) => void
+  /** Called to register/unregister the live mouse-click relay handler */
+  setRelayHandler?: (handler: ((x: number, y: number) => void) | null) => void
+}
 
 // Sample a 3x3 grid across the canvas — true if any non-transparent pixel found
 const WEBGL_GRID_CHECK = () => {
@@ -58,7 +64,7 @@ async function runCapture(
   navigateUrl: string,
   outputDir: string,
   onProgress: ProgressCallback,
-  waitForClick?: WaitForClickFn,
+  hooks: CaptureHooks = {},
 ): Promise<void> {
   const proxyServer = process.env.PLAYWRIGHT_PROXY
 
@@ -114,6 +120,45 @@ async function runCapture(
     }
   }
 
+  // Starts a CDP screencast and registers the mouse relay so the user can
+  // interact with the live browser view from the processing overlay.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let cdpSession: any = null
+
+  async function startInteractiveMode(): Promise<void> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      cdpSession = await (context as any).newCDPSession(page)
+      await cdpSession.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 70,
+        maxWidth: VIEWPORT_WIDTH,
+        maxHeight: VIEWPORT_HEIGHT,
+        everyNthFrame: 1,
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      cdpSession.on('Page.screencastFrame', (params: any) => {
+        hooks.onScreencastFrame?.(params.data)
+        void cdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId })
+      })
+    } catch {
+      // CDP not available — fall back to screenshot polling silently
+      cdpSession = null
+    }
+
+    hooks.setRelayHandler?.((x: number, y: number) => {
+      void page.mouse.click(x, y)
+    })
+  }
+
+  async function stopInteractiveMode(): Promise<void> {
+    hooks.setRelayHandler?.(null)
+    if (cdpSession) {
+      await cdpSession.send('Page.stopScreencast').catch(() => {})
+      cdpSession = null
+    }
+  }
+
   try {
     onProgress(0, 'Navigating to HeroForge...')
     await page
@@ -125,7 +170,7 @@ async function runCapture(
 
     await saveLive()
 
-    // Give Cloudflare up to 20s to self-resolve (managed JS challenge)
+    // Give Cloudflare up to 20s to self-resolve
     let elapsed = 0
     while (elapsed < 20_000) {
       if (!await isCloudflareChallenge(page)) break
@@ -135,37 +180,28 @@ async function runCapture(
       onProgress(0, `Waiting for security check... (${elapsed / 1000}s)`)
     }
 
-    // If still on challenge page, ask the user to click through it
+    // If still challenged, open the live interactive view so the user can click through
     if (await isCloudflareChallenge(page)) {
-      if (!waitForClick) {
+      await startInteractiveMode()
+      onProgress(0, 'Click the verification checkbox in the live window below ↓')
+
+      const deadline = Date.now() + 5 * 60 * 1000
+      while (Date.now() < deadline) {
+        if (!await isCloudflareChallenge(page)) break
+        await page.waitForTimeout(500)
+      }
+
+      await stopInteractiveMode()
+
+      if (await isCloudflareChallenge(page)) {
         const debug = await debugSnapshot('cloudflare-challenge')
         throw new Error(
-          `Cloudflare bot detection triggered.\n` +
-          `Fix: set PLAYWRIGHT_PROXY=http://user:pass@host:port in Railway variables.\n${debug}`
+          `Cloudflare verification not completed within 5 minutes.\n` +
+          `Fix: set PLAYWRIGHT_PROXY=http://user:pass@host:port for a residential IP.\n${debug}`
         )
       }
 
-      onProgress(0, 'Click the verification checkbox in the live preview below ↓')
-      await saveLive()
-
-      // Relay user clicks until the challenge clears or we time out
-      const deadline = Date.now() + 3 * 60 * 1000
-      while (Date.now() < deadline) {
-        const { x, y } = await waitForClick()
-        await page.mouse.click(x, y)
-        await page.waitForTimeout(3_000)
-        await saveLive()
-
-        if (!await isCloudflareChallenge(page)) {
-          onProgress(0, 'Verification passed — continuing...')
-          break
-        }
-
-        if (Date.now() >= deadline) {
-          throw new Error('Cloudflare verification not resolved within 3 minutes of user interaction.')
-        }
-        onProgress(0, 'Still verifying — click again if a new challenge appeared ↓')
-      }
+      onProgress(0, 'Verification passed — continuing...')
     }
 
     onProgress(0, 'Waiting for 3D viewer canvas...')
@@ -227,6 +263,7 @@ async function runCapture(
       onProgress(i + 1, `Capturing pose ${i + 1} of ${FRAME_COUNT}...`)
     }
   } finally {
+    await stopInteractiveMode()
     await context.close()
     await browser.close()
   }
@@ -236,7 +273,7 @@ export async function captureHeroForgeFrames(
   heroforgeUrl: string,
   characterId: string,
   onProgress: ProgressCallback,
-  waitForClick?: WaitForClickFn,
+  hooks: CaptureHooks = {},
 ): Promise<{ frameCount: number }> {
   const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
   const outputDir = path.join(dataDir, 'characters', characterId)
@@ -248,7 +285,7 @@ export async function captureHeroForgeFrames(
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       if (attempt === 2) onProgress(0, 'Retrying capture...')
-      await runCapture(navigateUrl, outputDir, onProgress, waitForClick)
+      await runCapture(navigateUrl, outputDir, onProgress, hooks)
       return { frameCount: FRAME_COUNT }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))

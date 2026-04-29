@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlertCircle, MousePointer2 } from 'lucide-react'
+import { AlertCircle } from 'lucide-react'
 
 interface ProcessingOverlayProps {
   jobId: string
-  heroforgeUrl: string
+  heroforgeUrl?: string
   onComplete: () => void
   onError: (message: string) => void
 }
@@ -15,7 +15,7 @@ const TOTAL_FRAMES = 36
 const VIEWPORT_W = 800
 const VIEWPORT_H = 800
 
-export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: ProcessingOverlayProps) {
+export function ProcessingOverlay({ jobId, onComplete, onError }: ProcessingOverlayProps) {
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState('Queued...')
   const [status, setStatus] = useState<'pending' | 'processing' | 'waiting_for_user' | 'complete' | 'error'>(
@@ -25,19 +25,12 @@ export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: 
   const [characterId, setCharacterId] = useState<string | null>(null)
   const [liveTs, setLiveTs] = useState(0)
   const [displayedSrc, setDisplayedSrc] = useState<string | null>(null)
-  const [clickSent, setClickSent] = useState(false)
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const esRef = useRef<EventSource | null>(null)
 
-  // Preload the next live screenshot off-screen; only swap the displayed src
-  // once the new image is fully loaded — eliminates flicker and layout shifts.
-  useEffect(() => {
-    if (!characterId || !liveTs) return
-    const url = `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
-    const img = new window.Image()
-    img.onload = () => setDisplayedSrc(url)
-    img.src = url
-  }, [characterId, liveTs])
-
+  // Poll job status
   useEffect(() => {
     const poll = async () => {
       try {
@@ -67,9 +60,7 @@ export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: 
           setErrorMsg(data.error ?? 'An unknown error occurred')
           onError(data.error ?? 'Unknown error')
         }
-      } catch {
-        // Network error — keep polling
-      }
+      } catch { /* network error — keep polling */ }
     }
 
     poll()
@@ -77,25 +68,56 @@ export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: 
     return () => clearInterval(intervalRef.current!)
   }, [jobId, onComplete, onError])
 
-  const handlePreviewClick = useCallback(async (e: React.MouseEvent<HTMLDivElement>) => {
-    if (status !== 'waiting_for_user' || !characterId) return
+  // Preload screenshot for the normal processing view
+  useEffect(() => {
+    if (!characterId || !liveTs) return
+    const url = `/api/frames/${characterId}/debug-live.png?t=${liveTs}`
+    const img = new window.Image()
+    img.onload = () => setDisplayedSrc(url)
+    img.src = url
+  }, [characterId, liveTs])
+
+  // CDP screencast via SSE — active only while waiting_for_user
+  useEffect(() => {
+    if (status !== 'waiting_for_user') {
+      esRef.current?.close()
+      esRef.current = null
+      return
+    }
+
+    // Already connected
+    if (esRef.current) return
+
+    const es = new EventSource(`/api/jobs/${jobId}/screencast`)
+    esRef.current = es
+
+    es.onmessage = (e) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      const img = new window.Image()
+      img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      img.src = `data:image/jpeg;base64,${e.data}`
+    }
+
+    return () => {
+      es.close()
+      esRef.current = null
+    }
+  }, [status, jobId])
+
+  // Forward pointer events on the canvas to the Playwright browser
+  const handleCanvasPointer = useCallback(async (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
-    // Scale display coordinates to the 800×800 Playwright viewport
     const x = Math.round(((e.clientX - rect.left) / rect.width) * VIEWPORT_W)
     const y = Math.round(((e.clientY - rect.top) / rect.height) * VIEWPORT_H)
-
-    setClickSent(true)
-    try {
-      await fetch(`/api/jobs/${jobId}/interact`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ x, y }),
-      })
-      setLiveTs(Date.now())
-    } finally {
-      setTimeout(() => setClickSent(false), 2_000)
-    }
-  }, [status, characterId, jobId])
+    await fetch(`/api/jobs/${jobId}/interact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x, y }),
+    })
+  }, [jobId])
 
   const pct = Math.round((progress / TOTAL_FRAMES) * 100)
   const isWaiting = status === 'waiting_for_user'
@@ -109,7 +131,6 @@ export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: 
         transition={{ duration: 0.3 }}
         className="flex flex-col items-center justify-center py-12 px-8 text-center"
       >
-        {/* Rune spinner — hide when waiting for user so attention goes to the preview */}
         {!isWaiting && (
           <div className="relative mb-6">
             <motion.div
@@ -139,47 +160,36 @@ export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: 
               {errorMsg}
             </p>
           </div>
+
         ) : isWaiting ? (
           <>
-            <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
-              Cloudflare is blocking the automated browser. Click the verification
-              checkbox in the preview below to continue.
+            <p className="font-body text-sm text-parchment-300/60 mb-4 max-w-sm">
+              Click the verification checkbox below. Your clicks go directly to the browser.
             </p>
 
-            {displayedSrc && (
-              <div className="w-full max-w-sm mb-4 relative">
-                <div
-                  className="relative cursor-crosshair rounded-lg overflow-hidden border-2 border-gold-400/60 animate-pulse-slow"
-                  onClick={handlePreviewClick}
-                >
-                  <img
-                    src={displayedSrc}
-                    alt="Live browser view"
-                    className="w-full block bg-obsidian-700"
-                  />
-                  {/* Click-here overlay */}
-                  <div className="absolute inset-0 bg-black/10 flex items-end justify-center pb-3 pointer-events-none">
-                    <span className="flex items-center gap-1.5 font-ui text-xs text-white/80 bg-black/50 px-2.5 py-1 rounded-full">
-                      <MousePointer2 className="w-3 h-3" />
-                      {clickSent ? 'Click sent — waiting...' : 'Click anywhere to relay to browser'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Live interactive canvas — driven by CDP screencast frames over SSE */}
+            <div className="w-full max-w-sm mb-3">
+              <canvas
+                ref={canvasRef}
+                width={VIEWPORT_W}
+                height={VIEWPORT_H}
+                onClick={handleCanvasPointer}
+                className="w-full rounded-lg border-2 border-gold-400/50 bg-obsidian-700 cursor-crosshair"
+                style={{ aspectRatio: '1 / 1' }}
+              />
+            </div>
 
             <p className="font-ui text-xs text-parchment-300/30 max-w-xs leading-relaxed">
-              The preview updates every 2s. After clicking, wait a moment for the
-              page to respond.
+              Live browser view · clicks are forwarded in real time
             </p>
           </>
+
         ) : (
           <>
             <p className="font-body text-sm text-parchment-300/70 mb-4 max-w-sm">
               {stage}
             </p>
 
-            {/* Progress bar */}
             <div className="w-full max-w-xs mb-6">
               <div className="h-1.5 bg-obsidian-600 rounded-full overflow-hidden">
                 <motion.div
@@ -189,32 +199,13 @@ export function ProcessingOverlay({ jobId, heroforgeUrl, onComplete, onError }: 
                   transition={{ duration: 0.4, ease: 'easeOut' }}
                 />
               </div>
-              <p className="font-ui text-xs text-parchment-300/40 mt-2 text-right">
-                {pct}%
-              </p>
+              <p className="font-ui text-xs text-parchment-300/40 mt-2 text-right">{pct}%</p>
             </div>
 
-            {/* HeroForge iframe — try embedding first; falls back gracefully if blocked */}
-            <div className="w-full max-w-sm mb-4">
-              <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
-                HeroForge preview
-              </p>
-              <div className="relative w-full rounded-lg overflow-hidden border border-white/[0.08] bg-obsidian-700" style={{ aspectRatio: '1 / 1' }}>
-                <iframe
-                  src={heroforgeUrl}
-                  className="absolute inset-0 w-full h-full"
-                  allow="accelerometer; camera; gyroscope; xr-spatial-tracking"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                  title="HeroForge 3D viewer"
-                />
-              </div>
-            </div>
-
-            {/* Screenshot-based live preview (server-side view) */}
             {displayedSrc && (
               <div className="w-full max-w-sm mb-4">
                 <p className="font-ui text-xs text-parchment-300/30 mb-2 text-left tracking-wider uppercase">
-                  Capture progress
+                  Live preview
                 </p>
                 <img
                   src={displayedSrc}
